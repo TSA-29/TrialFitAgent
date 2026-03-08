@@ -1,0 +1,11 @@
+# Environment and local secrets
+.env
+.env.*
+*.env
+*.local
+*api_key*
+*apikey*
+
+# Python artifacts
+__pycache__/
+*.py[cod]

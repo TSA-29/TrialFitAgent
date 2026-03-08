@@ -1,0 +1,100 @@
+[UI]
+# Chainlit configuration for BulkBot
+
+# App name and branding
+name = "BulkBot"
+default_collapse_content = true
+show_readme_as_default = false
+
+# Theme colors (fitness-inspired: energetic orange + dark theme)
+[UI.theme]
+# You can choose between "light" or "dark"
+default = "dark"
+
+# Custom colors (orange/fitness theme)
+primary = "#FF6B35"  # Energetic orange
+secondary = "#2D3748"  # Dark gray
+background = "#1A202C"  # Very dark gray
+surface = "#2D3748"  # Panel background
+
+# Accent colors
+accent = "#FF6B35"  # Orange accent
+success = "#48BB78"  # Green for success
+warning = "#ECC94B"  # Yellow for warnings
+error = "#F56565"  # Red for errors
+
+# Font settings
+font_family = "Inter, system-ui, -apple-system, sans-serif"
+
+# Chat settings
+[UI.chat]
+# Show user avatar
+show_user_avatar = true
+
+# Show timestamp on messages
+show_timestamp = true
+
+# Default model display name
+default_model = "BulkBot AI"
+
+# Enable code syntax highlighting for better tool output display
+[UI.code]
+# Show code syntax highlighting
+show_language_selector = true
+
+# Theme for code blocks (dark theme friendly)
+theme = "monokai"
+
+# Features
+[UI.features]
+# Enable/disable features
+show_latex = false  # No math rendering needed
+multi_modal = false  # Text only for now
+enable_history = true  # Enable chat history
+show_share_button = false  # Disable share button for local use
+
+# Enable markdown rendering for better formatted tool outputs
+[UI.markdown]
+# Enable markdown rendering
+enable = true
+
+# Sanitize HTML for security
+sanitize_html = true
+
+# Welcome message
+[UI.welcome]
+# Show welcome screen
+show_welcome = true
+
+# Welcome message title
+title = "Welcome to BulkBot! 💪"
+
+# Welcome message description
+description = """
+Your AI-powered fitness assistant for:
+- 📊 **Macro & TDEE Calculations** - Get precise nutrition targets
+- 🍗 **Food Lookups** - Find exact macros for any food
+- 📧 **Outlook Integration** - Draft emails & create calendar events
+- 🎵 **Apple Music Control** - Search and play music hands-free
+
+Try asking: *"Calculate my macros for lean bulk"* or *"Search for Apple Music tracks"*
+"""
+
+# Features list
+features = [
+    "Precise TDEE & macro calculations",
+    "Food macro database lookups",
+    "Outlook email & calendar integration",
+    "Apple Music search & playback",
+    "Modern web-based chat interface",
+    "Dark/Light mode support"
+]
+
+# Metadata
+[Project]
+# Project information
+project_name = "BulkBot"
+version = "1.0.0"
+description = "AI Fitness Assistant with modern chatbot UI"
+[meta]
+generated_by = "2.9.6"

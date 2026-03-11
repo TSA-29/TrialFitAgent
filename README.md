@@ -10,7 +10,8 @@ This repo is now structured for Vercel:
 
 - Tool-calling assistant using your existing `agent.py` tools
 - Stateless serverless chat endpoint (`/api/chat`)
-- Browser-side history persistence (localStorage)
+- Browser-side multi-thread chat history (localStorage sidebar)
+- "Thinking" effect in UI with animated assistant state + tool step cards
 - Health endpoint (`/api/health`)
 
 ## Requirements

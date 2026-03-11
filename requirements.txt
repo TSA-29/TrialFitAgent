@@ -1,7 +1,7 @@
-# BulkBot Dependencies
+# Core dependencies
 openai>=1.0.0
-pywin32>=306; sys_platform == "win32"
 python-dotenv>=1.0.0
+flask>=3.0.0
 
-# Web UI
-chainlit>=1.1.0
+# Optional local Windows-only dependency used by some environments
+pywin32>=306; sys_platform == "win32"

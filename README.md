@@ -1,91 +1,85 @@
-# DeskPilot - Mock Personal Assistant
+# DeskPilot - Vercel-Friendly Assistant
 
-DeskPilot is a conversational AI assistant that simulates real productivity workflows using mock data.
+DeskPilot is a conversational assistant with mock productivity tools (email, calendar, travel, music, Notion).
 
-## Capabilities
+This repo is now structured for Vercel:
+- Static frontend: `index.html`
+- Python serverless API: `api/index.py`
 
-- Draft emails
-- Create and list calendar appointments
-- Book and list trips
-- Launch/control a mock music app session
-- Edit and read mock Notion pages
+## Features
 
-All integrations are simulated in-memory so the experience feels real without requiring external accounts.
+- Tool-calling assistant using your existing `agent.py` tools
+- Stateless serverless chat endpoint (`/api/chat`)
+- Browser-side history persistence (localStorage)
+- Health endpoint (`/api/health`)
 
-## Setup
+## Requirements
 
-### Prerequisites
+- Python 3.10+
+- `STEP_API_KEY` set in environment variables
 
-- Python 3.8+
-- `STEP_API_KEY` set in your environment (for the model API)
+## Local Run
 
-### Install
+1. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Run Web UI
+2. Set API key:
 
 ```bash
-.\.venv\Scripts\python.exe -m chainlit run ui.py -w
+# PowerShell
+$env:STEP_API_KEY="your_key_here"
 ```
 
-Default login credentials (for history support):
-- Username: `deskpilot`
-- Password: `deskpilot`
-
-You can override them with environment variables:
-- `DESKPILOT_LOGIN_USERNAME`
-- `DESKPILOT_LOGIN_PASSWORD`
-
-### Run CLI
+3. Run local API:
 
 ```bash
-python agent.py
+python api/index.py
 ```
 
-## Deploy on Render
+4. Open `index.html` (or serve it with any static server) and use the chat UI.
 
-This repo includes `render.yaml` for one-click Render setup.
+## Deploy to Vercel
 
-1. Create a new **Web Service** in Render from this repo.
-2. Let Render detect `render.yaml`.
-3. Set `STEP_API_KEY` in Render environment variables.
+1. Import this repo into Vercel.
+2. Vercel will read `vercel.json` automatically.
+3. In Vercel Project Settings -> Environment Variables, set:
+   - `STEP_API_KEY` = your key
 4. Deploy.
 
-The service starts with:
+No custom build/start command is needed because `vercel.json` defines routing/build behavior.
 
-```bash
-python start_render.py
+## API Contract
+
+- `POST /api/chat`
+  - Request body:
+
+```json
+{
+  "prompt": "Draft an email to Alex about meeting reschedule",
+  "history": [
+    {"role": "user", "content": "..."}, 
+    {"role": "assistant", "content": "..."}
+  ]
+}
 ```
 
-`start_render.py` runs Chainlit with Render-safe host/port and guards against invalid
-`DEBUG` values (for example `DEBUG=release`) that can make Chainlit fail at boot.
+  - Response body:
 
-If you still get a white page, check Render logs for startup errors and confirm:
-- `STEP_API_KEY` is set
-- Service type is **Web Service** (not Static Site)
-- Start command is `python start_render.py`
+```json
+{
+  "reply": "Assistant response",
+  "history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}],
+  "tool_events": []
+}
+```
 
-## Example Prompts
-
-- `Draft an email to alex@company.com about moving tomorrow's meeting to 4 PM.`
-- `Create a calendar appointment called Product Sync on 2026-03-12 from 14:00 to 15:00 with sam@company.com.`
-- `Book a trip for Jamie from Shanghai to Tokyo departing 2026-04-20 returning 2026-04-24.`
-- `Open Spotify and play midnight drive.`
-- `Create a Notion page called Q2 Plan and add a todo: finalize roadmap.`
-
-## Project Structure
-
-- `agent.py` - core assistant tools and tool-calling loop
-- `ui.py` - Chainlit chat UI with tool execution visualization
-- `requirements.txt` - dependencies
-- `.chainlit/config.toml` - Chainlit settings
+- `GET /api/health`
+  - Returns `{ "status": "ok" }`
 
 ## Notes
 
-- Tool actions are mock-only and stored in process memory.
-- Restarting the app resets all mock emails, appointments, trips, and Notion pages.
-- Chat history is persisted in `.files/deskpilot_history.json` and shown in the left sidebar.
-- A visible running/thinking indicator appears during model and tool execution.
+- Tool data is still mock/in-memory and resets with cold starts/redeploys.
+- If `STEP_API_KEY` is missing, `/api/chat` returns a startup error.

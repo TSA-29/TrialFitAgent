@@ -45,6 +45,29 @@ You can override them with environment variables:
 python agent.py
 ```
 
+## Deploy on Render
+
+This repo includes `render.yaml` for one-click Render setup.
+
+1. Create a new **Web Service** in Render from this repo.
+2. Let Render detect `render.yaml`.
+3. Set `STEP_API_KEY` in Render environment variables.
+4. Deploy.
+
+The service starts with:
+
+```bash
+python start_render.py
+```
+
+`start_render.py` runs Chainlit with Render-safe host/port and guards against invalid
+`DEBUG` values (for example `DEBUG=release`) that can make Chainlit fail at boot.
+
+If you still get a white page, check Render logs for startup errors and confirm:
+- `STEP_API_KEY` is set
+- Service type is **Web Service** (not Static Site)
+- Start command is `python start_render.py`
+
 ## Example Prompts
 
 - `Draft an email to alex@company.com about moving tomorrow's meeting to 4 PM.`

@@ -1,42 +1,29 @@
 import json
 import os
-import time
+import random
+import string
 from datetime import datetime, timedelta
-from pathlib import Path
-import ctypes
-from urllib import error as urllib_error
-from urllib import parse as urllib_parse
-from urllib import request as urllib_request
-import webbrowser
+
 from openai import OpenAI
 
 # Load environment variables from .env file if it exists
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
-    pass  # python-dotenv not installed, will use system env vars
+    pass
 
-# --- 1. Setup Stepfun Client ---
 MODEL = "step-3.5-flash"
 DEBUG = os.environ.get("BULKBOT_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 SYSTEM_PROMPT = (
-    "You are BulkBot, an expert fitness AI. "
-    "You MUST use your tools for any math or food data. "
-    "If the user asks to create or save a markdown file, use write_markdown_file. "
-    "If the user asks to draft an email in Outlook, use create_outlook_draft and never auto-send. "
-    "If the user asks to add a calendar event in Outlook, use create_outlook_calendar_event. "
-    "If the user asks to view calendar events, use list_outlook_calendar_events. "
-    "For Apple Music requests, use Apple Music tools to search, open, and control playback. "
-    "For Apple Music 'play now' requests, prefer auto preview mode so playback starts without extra clicks. "
-    "Never guess calories or macros. "
-    "Keep responses eye-friendly and concise by default. "
-    "Unless the user asks for depth, use this format with short lines: "
-    "Verdict: one sentence. "
-    "Why: 2-4 bullet points max. "
-    "Next step: 1 practical action. "
-    "Limit total length to about 80-140 words. "
-    "Avoid long paragraphs."
+    "You are DeskPilot, a personal assistant AI. "
+    "Use tools whenever the user asks for email drafting, calendar scheduling, "
+    "trip booking, music app actions, or Notion editing. "
+    "All tools are mock and simulated but should be treated as operational. "
+    "Never claim an action happened without calling the matching tool first. "
+    "If key details are missing, ask one concise follow-up question. "
+    "Keep answers concise and practical."
 )
 
 
@@ -47,641 +34,597 @@ def build_client():
     return OpenAI(api_key=api_key, base_url="https://api.stepfun.com/v1")
 
 
-# --- 2. Define Deterministic Python Tools ---
-def calculate_tdee_macros(age, weight_kg, height_cm):
-    """Calculates clean bulk macros using the Mifflin-St Jeor Equation."""
-    bmr = (10 * weight_kg) + (6.25 * height_cm) - (5 * age) + 5
-    tdee = bmr * 1.55 # Assuming moderate activity (3-5 days/week)
-    bulk_calories = tdee + 300 # 300 surplus for clean bulk
-    
-    protein_g = weight_kg * 2.2 
-    fat_g = (bulk_calories * 0.25) / 9 
-    carbs_g = (bulk_calories - (protein_g * 4) - (fat_g * 9)) / 4
-    
-    return json.dumps({
-        "status": "success",
-        "target_calories": int(bulk_calories),
-        "macros": {"protein_g": int(protein_g), "fats_g": int(fat_g), "carbs_g": int(carbs_g)}
-    })
-
-def lookup_food_macros(food_name, grams):
-    """Mocks a database lookup for exact food macronutrients."""
-    # A real agent would hit a USDA API or database here
-    database = {
-        "chicken breast": {"protein": 0.31, "carbs": 0.0, "fat": 0.036, "cals": 1.65},
-        "white rice": {"protein": 0.027, "carbs": 0.28, "fat": 0.003, "cals": 1.30},
-        "salmon": {"protein": 0.20, "carbs": 0.0, "fat": 0.13, "cals": 2.08}
-    }
-    
-    food_key = next((key for key in database.keys() if key in food_name.lower()), None)
-    
-    if food_key:
-        data = database[food_key]
-        return json.dumps({
-            "food": food_key,
-            "amount_grams": grams,
-            "calories": int(data["cals"] * grams),
-            "protein_g": int(data["protein"] * grams),
-            "carbs_g": int(data["carbs"] * grams),
-            "fat_g": int(data["fat"] * grams)
-        })
-    return json.dumps({"error": f"Food '{food_name}' not found in database."})
-
-
-def write_markdown_file(filename, content):
-    """Writes markdown content to a local file in the project directory."""
-    file_path = Path(filename)
-    if file_path.suffix.lower() != ".md":
-        file_path = file_path.with_suffix(".md")
-
-    if file_path.is_absolute():
-        return json.dumps({"status": "error", "message": "Use a relative path only."})
-
-    target_path = (Path.cwd() / file_path).resolve()
-    project_root = Path.cwd().resolve()
-    if project_root not in target_path.parents and target_path != project_root:
-        return json.dumps({"status": "error", "message": "Path escapes project directory."})
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(content, encoding="utf-8")
-    return json.dumps({
-        "status": "success",
-        "message": "Markdown file written.",
-        "path": str(file_path).replace("\\", "/"),
-    })
-
-
-def create_outlook_draft(to, subject, body, cc="", bcc="", display=True):
-    """Creates an Outlook email draft on the local machine. Never sends automatically."""
-    try:
-        import win32com.client as win32
-    except ImportError:
-        return json.dumps({
-            "status": "error",
-            "message": "pywin32 is not installed. Run: pip install pywin32",
-        })
-
-    try:
-        outlook = win32.Dispatch("Outlook.Application")
-        mail = outlook.CreateItem(0)  # 0 = Mail item
-        mail.To = to
-        mail.Subject = subject
-        mail.Body = body
-        if cc:
-            mail.CC = cc
-        if bcc:
-            mail.BCC = bcc
-
-        if display:
-            mail.Display()
-            action = "draft_opened"
-        else:
-            mail.Save()
-            action = "draft_saved"
-
-        return json.dumps({
-            "status": "success",
-            "action": action,
-            "to": to,
-            "subject": subject,
-        })
-    except Exception as exc:
-        return json.dumps({
-            "status": "error",
-            "message": f"Failed to create Outlook draft: {exc}",
-        })
-
-
-def create_outlook_calendar_event(
-    subject,
-    start_iso,
-    end_iso,
-    location="",
-    body="",
-    busy_status="busy",
-    reminder_minutes=15,
-    all_day=False,
-    display=True
-):
-    """Creates an Outlook calendar event on the local machine."""
-    try:
-        import win32com.client as win32
-    except ImportError:
-        return json.dumps({
-            "status": "error",
-            "message": "pywin32 is not installed. Run: pip install pywin32",
-        })
-
-    status_map = {
-        "free": 0,
-        "tentative": 1,
-        "busy": 2,
-        "oof": 3,
-        "working_elsewhere": 4,
-    }
-    busy_code = status_map.get(str(busy_status).lower(), 2)
-
-    try:
-        start_dt = datetime.fromisoformat(start_iso)
-        end_dt = datetime.fromisoformat(end_iso)
-    except ValueError:
-        return json.dumps({
-            "status": "error",
-            "message": "Invalid datetime format. Use ISO format, e.g. 2026-03-06T14:00:00",
-        })
-
-    if end_dt <= start_dt:
-        return json.dumps({
-            "status": "error",
-            "message": "end_iso must be later than start_iso.",
-        })
-
-    try:
-        outlook = win32.Dispatch("Outlook.Application")
-        appointment = outlook.CreateItem(1)  # 1 = olAppointmentItem
-        appointment.Subject = subject
-        appointment.Start = start_dt.strftime("%Y-%m-%d %H:%M")
-        appointment.End = end_dt.strftime("%Y-%m-%d %H:%M")
-        appointment.Location = location
-        appointment.Body = body
-        appointment.BusyStatus = busy_code
-        appointment.AllDayEvent = bool(all_day)
-
-        reminder_minutes = int(reminder_minutes)
-        if reminder_minutes >= 0:
-            appointment.ReminderSet = True
-            appointment.ReminderMinutesBeforeStart = reminder_minutes
-        else:
-            appointment.ReminderSet = False
-
-        if display:
-            appointment.Display()
-            action = "event_opened"
-        else:
-            appointment.Save()
-            action = "event_saved"
-
-        return json.dumps({
-            "status": "success",
-            "action": action,
-            "subject": subject,
-            "start": start_dt.isoformat(),
-            "end": end_dt.isoformat(),
-        })
-    except Exception as exc:
-        return json.dumps({
-            "status": "error",
-            "message": f"Failed to create Outlook calendar event: {exc}",
-        })
-
-
-def list_outlook_calendar_events(start_iso="", end_iso="", max_items=10, include_body=False):
-    """Lists Outlook calendar events from the local machine in a date window."""
-    try:
-        import win32com.client as win32
-    except ImportError:
-        return json.dumps({
-            "status": "error",
-            "message": "pywin32 is not installed. Run: pip install pywin32",
-        })
-
-    try:
-        start_dt = datetime.fromisoformat(start_iso) if start_iso else None
-        end_dt = datetime.fromisoformat(end_iso) if end_iso else None
-    except ValueError:
-        return json.dumps({
-            "status": "error",
-            "message": "Invalid datetime format. Use ISO format, e.g. 2026-03-06T14:00:00",
-        })
-
-    if start_dt and end_dt and end_dt <= start_dt:
-        return json.dumps({
-            "status": "error",
-            "message": "end_iso must be later than start_iso.",
-        })
-
-    # Keep default reads bounded so recurring events don't explode the result set.
-    if not start_dt and not end_dt:
-        start_dt = datetime.now()
-        end_dt = start_dt + timedelta(days=30)
-    elif start_dt and not end_dt:
-        end_dt = start_dt + timedelta(days=30)
-    elif end_dt and not start_dt:
-        start_dt = end_dt - timedelta(days=30)
-
-    try:
-        max_items = max(1, min(int(max_items), 100))
-    except (TypeError, ValueError):
-        max_items = 10
-
-    def outlook_datetime(dt):
-        return dt.strftime("%m/%d/%Y %I:%M %p")
-
-    def to_iso(value):
-        if hasattr(value, "strftime"):
-            return value.strftime("%Y-%m-%dT%H:%M:%S")
-        return str(value)
-
-    try:
-        outlook = win32.Dispatch("Outlook.Application")
-        namespace = outlook.GetNamespace("MAPI")
-        calendar_folder = namespace.GetDefaultFolder(9)  # 9 = Calendar
-        items = calendar_folder.Items
-        items.IncludeRecurrences = True
-        items.Sort("[Start]")
-
-        restrictions = [
-            f"[End] >= '{outlook_datetime(start_dt)}'",
-            f"[Start] <= '{outlook_datetime(end_dt)}'",
-        ]
-        items = items.Restrict(" AND ".join(restrictions))
-
-        total = items.Count
-        results = []
-        for idx in range(1, min(total, max_items) + 1):
-            item = items.Item(idx)
-            event = {
-                "subject": str(getattr(item, "Subject", "") or ""),
-                "start": to_iso(getattr(item, "Start", "")),
-                "end": to_iso(getattr(item, "End", "")),
-                "location": str(getattr(item, "Location", "") or ""),
-                "all_day": bool(getattr(item, "AllDayEvent", False)),
-            }
-            if include_body:
-                body = str(getattr(item, "Body", "") or "")
-                event["body"] = body[:500] + ("..." if len(body) > 500 else "")
-            results.append(event)
-
-        return json.dumps({
-            "status": "success",
-            "range_start": start_dt.isoformat(),
-            "range_end": end_dt.isoformat(),
-            "returned": len(results),
-            "total_in_range": int(total),
-            "events": results,
-        })
-    except Exception as exc:
-        return json.dumps({
-            "status": "error",
-            "message": f"Failed to list Outlook calendar events: {exc}",
-        })
-
-
-def _apple_music_search_api(query, country_code="us", limit=5):
-    """Search Apple Music/iTunes catalog and return normalized song hits."""
-    try:
-        limit = max(1, min(int(limit), 25))
-    except (TypeError, ValueError):
-        limit = 5
-
-    country = (country_code or "us").strip().lower()[:2] or "us"
-    params = urllib_parse.urlencode({
-        "term": query,
-        "media": "music",
-        "entity": "song",
-        "country": country,
-        "limit": limit,
-    })
-    url = f"https://itunes.apple.com/search?{params}"
-    req = urllib_request.Request(url, headers={"User-Agent": "BulkBot/1.0"})
-
-    try:
-        with urllib_request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib_error.HTTPError as exc:
-        return None, json.dumps({
-            "status": "error",
-            "message": f"Apple Music search failed with HTTP {exc.code}",
-        })
-    except Exception as exc:
-        return None, json.dumps({
-            "status": "error",
-            "message": f"Apple Music search request failed: {exc}",
-        })
-
-    results = []
-    for item in payload.get("results", []):
-        results.append({
-            "track_name": item.get("trackName", ""),
-            "artist_name": item.get("artistName", ""),
-            "album_name": item.get("collectionName", ""),
-            "track_url": item.get("trackViewUrl", ""),
-            "preview_url": item.get("previewUrl", ""),
-        })
-    return results, None
-
-
-def _open_url(url):
-    """Open URL with system default handler."""
-    try:
-        if os.name == "nt":
-            os.startfile(url)  # type: ignore[attr-defined]
-            return True
-    except Exception:
-        pass
-    return bool(webbrowser.open(url))
-
-
-def search_apple_music(query, country_code="us", limit=5, open_search_page=False):
-    """Searches Apple Music and optionally opens the Apple Music search page."""
-    results, err = _apple_music_search_api(query=query, country_code=country_code, limit=limit)
-    if err:
-        return err
-
-    country = (country_code or "us").strip().lower()[:2] or "us"
-    search_url = f"https://music.apple.com/{country}/search?term={urllib_parse.quote_plus(query)}"
-    opened = _open_url(search_url) if open_search_page else False
-    return json.dumps({
-        "status": "success",
-        "query": query,
-        "search_url": search_url,
-        "opened_search_page": opened,
-        "count": len(results),
-        "results": results,
-    })
-
-
-def play_apple_music(query, country_code="us", play_mode="preview_auto"):
-    """Finds the top Apple Music result and opens preview or full track page."""
-    results, err = _apple_music_search_api(query=query, country_code=country_code, limit=1)
-    if err:
-        return err
-    if not results:
-        return json.dumps({
-            "status": "error",
-            "message": f"No Apple Music results found for '{query}'.",
-        })
-
-    top = results[0]
-    mode = str(play_mode or "preview_auto").strip().lower()
-    if mode == "full_track":
-        url = top.get("track_url", "")
-    else:
-        # Default behavior favors no-click playback.
-        url = top.get("preview_url", "") or top.get("track_url", "")
-
-    if not url:
-        return json.dumps({
-            "status": "error",
-            "message": "Top result does not include a playable URL/preview.",
-        })
-
-    opened = _open_url(url)
-    sent_play = False
-    if opened and mode == "full_track" and os.name == "nt":
-        # Give the handler/app a moment to focus, then ask the system player to play.
-        time.sleep(1.0)
-        sent_play, _ = _send_windows_media_command("play")
-
-    return json.dumps({
-        "status": "success",
-        "query": query,
-        "play_mode": mode,
-        "opened": opened,
-        "sent_play_command": sent_play,
-        "track": top,
-        "opened_url": url,
-        "note": "preview_auto usually starts immediately; full_track may require Apple Music UI interaction.",
-    })
-
-
-def open_apple_music_url(url):
-    """Opens a specific Apple Music URL."""
-    if not str(url).startswith("https://music.apple.com/"):
-        return json.dumps({
-            "status": "error",
-            "message": "URL must start with https://music.apple.com/",
-        })
-    opened = _open_url(url)
-    return json.dumps({
-        "status": "success",
-        "url": url,
-        "opened": opened,
-    })
-
-
-def _send_windows_media_command(action):
-    """Send explicit Windows media command via WM_APPCOMMAND."""
-    if os.name != "nt":
-        return False, "Media key control is currently implemented for Windows only."
-
-    cmd_map = {
-        "next": 11,
-        "previous": 12,
-        "stop": 13,
-        "play_pause": 14,
-        "play": 46,
-        "pause": 47,
-    }
-    cmd = cmd_map.get(str(action).strip().lower())
-    if cmd is None:
-        return False, "Invalid action. Use: play, pause, play_pause, next, previous, stop."
-
-    WM_APPCOMMAND = 0x0319
-    HWND_BROADCAST = 0xFFFF
-    lparam = cmd << 16
-    ctypes.windll.user32.SendMessageW(HWND_BROADCAST, WM_APPCOMMAND, 0, lparam)
-    return True, "Media command sent."
-
-
-def control_media_playback(action):
-    """Controls system media transport keys on Windows."""
-    ok, message = _send_windows_media_command(action)
-    if not ok:
-        return json.dumps({
-            "status": "error",
-            "message": message,
-        })
-
-    return json.dumps({
-        "status": "success",
-        "action": action,
-        "message": message,
-    })
-
-available_functions = {
-    "calculate_tdee_macros": calculate_tdee_macros,
-    "lookup_food_macros": lookup_food_macros,
-    "write_markdown_file": write_markdown_file,
-    "create_outlook_draft": create_outlook_draft,
-    "create_outlook_calendar_event": create_outlook_calendar_event,
-    "list_outlook_calendar_events": list_outlook_calendar_events,
-    "search_apple_music": search_apple_music,
-    "play_apple_music": play_apple_music,
-    "open_apple_music_url": open_apple_music_url,
-    "control_media_playback": control_media_playback,
+MOCK_DB = {
+    "emails": [],
+    "appointments": [],
+    "trips": [],
+    "notion_pages": {},
+    "music": {
+        "app_open": False,
+        "app_name": "",
+        "state": "stopped",
+        "now_playing": "",
+        "queue": [],
+    },
 }
 
-# --- 3. Define Tool Schemas for the LLM ---
+MOCK_MUSIC_LIBRARY = [
+    {"title": "Midnight Drive", "artist": "Nova Lane"},
+    {"title": "City of Echoes", "artist": "Luna Arcade"},
+    {"title": "Afterglow", "artist": "Jasper Vale"},
+    {"title": "Neon Skyline", "artist": "The Static Club"},
+    {"title": "Paper Planes", "artist": "Ari Bloom"},
+]
+
+
+def _new_id(prefix):
+    suffix = "".join(random.choices(string.digits, k=6))
+    return f"{prefix}-{suffix}"
+
+
+def _parse_iso_datetime(value, field_name):
+    try:
+        return datetime.fromisoformat(value), None
+    except ValueError:
+        return None, f"Invalid {field_name}. Use ISO format like 2026-03-15T14:00:00."
+
+
+def draft_email(to, subject, body, cc="", bcc="", priority="normal", send_time_iso=""):
+    if not to.strip():
+        return json.dumps({"status": "error", "message": "Recipient is required."})
+    if not subject.strip():
+        return json.dumps({"status": "error", "message": "Subject is required."})
+
+    send_time = ""
+    if send_time_iso:
+        send_dt, err = _parse_iso_datetime(send_time_iso, "send_time_iso")
+        if err:
+            return json.dumps({"status": "error", "message": err})
+        send_time = send_dt.isoformat()
+
+    email = {
+        "email_id": _new_id("EML"),
+        "to": to,
+        "cc": cc,
+        "bcc": bcc,
+        "subject": subject,
+        "body": body,
+        "priority": str(priority or "normal").lower(),
+        "scheduled_send_time": send_time,
+        "status": "drafted",
+        "created_at": datetime.now().isoformat(),
+        "mock": True,
+    }
+    MOCK_DB["emails"].append(email)
+
+    return json.dumps(
+        {
+            "status": "success",
+            "message": "Mock email draft created.",
+            "email": email,
+        }
+    )
+
+
+def list_email_drafts(limit=10, recipient_filter=""):
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 10
+
+    items = MOCK_DB["emails"]
+    if recipient_filter:
+        needle = recipient_filter.lower()
+        items = [x for x in items if needle in x["to"].lower()]
+
+    return json.dumps(
+        {
+            "status": "success",
+            "count": min(len(items), limit),
+            "emails": items[-limit:],
+        }
+    )
+
+
+def create_calendar_appointment(
+    title,
+    start_iso,
+    end_iso,
+    attendees="",
+    location="",
+    notes="",
+    reminder_minutes=15,
+):
+    if not title.strip():
+        return json.dumps({"status": "error", "message": "Appointment title is required."})
+
+    start_dt, start_err = _parse_iso_datetime(start_iso, "start_iso")
+    if start_err:
+        return json.dumps({"status": "error", "message": start_err})
+    end_dt, end_err = _parse_iso_datetime(end_iso, "end_iso")
+    if end_err:
+        return json.dumps({"status": "error", "message": end_err})
+
+    if end_dt <= start_dt:
+        return json.dumps({"status": "error", "message": "end_iso must be later than start_iso."})
+
+    try:
+        reminder = int(reminder_minutes)
+    except (TypeError, ValueError):
+        reminder = 15
+
+    attendee_list = [p.strip() for p in str(attendees).replace(";", ",").split(",") if p.strip()]
+
+    appointment = {
+        "appointment_id": _new_id("CAL"),
+        "title": title,
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
+        "attendees": attendee_list,
+        "location": location,
+        "notes": notes,
+        "reminder_minutes": reminder,
+        "status": "confirmed",
+        "created_at": datetime.now().isoformat(),
+        "mock": True,
+    }
+    MOCK_DB["appointments"].append(appointment)
+
+    return json.dumps(
+        {
+            "status": "success",
+            "message": "Mock calendar appointment created.",
+            "appointment": appointment,
+        }
+    )
+
+
+def list_calendar_appointments(start_iso="", end_iso="", limit=10):
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 10
+
+    if start_iso:
+        start_dt, err = _parse_iso_datetime(start_iso, "start_iso")
+        if err:
+            return json.dumps({"status": "error", "message": err})
+    else:
+        start_dt = datetime.now() - timedelta(days=30)
+
+    if end_iso:
+        end_dt, err = _parse_iso_datetime(end_iso, "end_iso")
+        if err:
+            return json.dumps({"status": "error", "message": err})
+    else:
+        end_dt = datetime.now() + timedelta(days=90)
+
+    if end_dt <= start_dt:
+        return json.dumps({"status": "error", "message": "end_iso must be later than start_iso."})
+
+    filtered = []
+    for item in MOCK_DB["appointments"]:
+        item_start = datetime.fromisoformat(item["start"])
+        if start_dt <= item_start <= end_dt:
+            filtered.append(item)
+
+    filtered.sort(key=lambda x: x["start"])
+
+    return json.dumps(
+        {
+            "status": "success",
+            "count": min(len(filtered), limit),
+            "appointments": filtered[:limit],
+        }
+    )
+
+
+def book_trip(
+    traveler_name,
+    origin,
+    destination,
+    depart_date,
+    return_date="",
+    transport="flight",
+    hotel_required=True,
+    budget_usd=0,
+):
+    if not traveler_name.strip():
+        return json.dumps({"status": "error", "message": "traveler_name is required."})
+    if not origin.strip() or not destination.strip():
+        return json.dumps({"status": "error", "message": "origin and destination are required."})
+
+    try:
+        depart_dt = datetime.strptime(depart_date, "%Y-%m-%d")
+    except ValueError:
+        return json.dumps({"status": "error", "message": "depart_date must be YYYY-MM-DD."})
+
+    if return_date:
+        try:
+            return_dt = datetime.strptime(return_date, "%Y-%m-%d")
+        except ValueError:
+            return json.dumps({"status": "error", "message": "return_date must be YYYY-MM-DD."})
+        if return_dt < depart_dt:
+            return json.dumps({"status": "error", "message": "return_date must be on/after depart_date."})
+        return_iso = return_dt.date().isoformat()
+    else:
+        return_iso = ""
+
+    trip = {
+        "trip_id": _new_id("TRP"),
+        "traveler_name": traveler_name,
+        "origin": origin,
+        "destination": destination,
+        "depart_date": depart_dt.date().isoformat(),
+        "return_date": return_iso,
+        "transport": str(transport or "flight").lower(),
+        "hotel_required": bool(hotel_required),
+        "budget_usd": float(budget_usd or 0),
+        "booking_reference": _new_id("BK"),
+        "status": "booked",
+        "created_at": datetime.now().isoformat(),
+        "mock": True,
+    }
+    MOCK_DB["trips"].append(trip)
+
+    return json.dumps(
+        {
+            "status": "success",
+            "message": "Mock trip booked.",
+            "trip": trip,
+        }
+    )
+
+
+def list_trips(limit=10):
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 10
+
+    return json.dumps(
+        {
+            "status": "success",
+            "count": min(len(MOCK_DB["trips"]), limit),
+            "trips": MOCK_DB["trips"][-limit:],
+        }
+    )
+
+
+def launch_music_app(app_name="Spotify", action="open", query=""):
+    app = str(app_name or "Spotify").strip()
+    action = str(action or "open").strip().lower()
+    music = MOCK_DB["music"]
+
+    if action == "open":
+        music["app_open"] = True
+        music["app_name"] = app
+        message = f"{app} launched (mock)."
+    elif action == "close":
+        music["app_open"] = False
+        music["state"] = "stopped"
+        music["now_playing"] = ""
+        message = f"{music.get('app_name') or app} closed (mock)."
+    elif action == "search":
+        needle = query.lower().strip()
+        matches = [
+            t
+            for t in MOCK_MUSIC_LIBRARY
+            if needle in t["title"].lower() or needle in t["artist"].lower()
+        ]
+        return json.dumps(
+            {
+                "status": "success",
+                "action": "search",
+                "query": query,
+                "matches": matches[:5],
+                "mock": True,
+            }
+        )
+    elif action in {"play", "pause", "next"}:
+        if not music["app_open"]:
+            music["app_open"] = True
+            music["app_name"] = app
+
+        if action == "play":
+            if query.strip():
+                track = {"title": query.strip().title(), "artist": "Mock Artist"}
+            else:
+                track = random.choice(MOCK_MUSIC_LIBRARY)
+            music["now_playing"] = f"{track['title']} - {track['artist']}"
+            music["state"] = "playing"
+            message = f"Now playing: {music['now_playing']} (mock)."
+        elif action == "pause":
+            music["state"] = "paused"
+            message = "Playback paused (mock)."
+        else:
+            track = random.choice(MOCK_MUSIC_LIBRARY)
+            music["now_playing"] = f"{track['title']} - {track['artist']}"
+            music["state"] = "playing"
+            message = f"Skipped to next: {music['now_playing']} (mock)."
+    else:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "Invalid action. Use open, close, search, play, pause, or next.",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "success",
+            "action": action,
+            "message": message,
+            "music_state": music,
+            "mock": True,
+        }
+    )
+
+
+def notion_edit_page(page_title, operation, content="", block_type="paragraph", task_done=False):
+    title = str(page_title or "").strip()
+    op = str(operation or "").strip().lower()
+    if not title:
+        return json.dumps({"status": "error", "message": "page_title is required."})
+    if not op:
+        return json.dumps({"status": "error", "message": "operation is required."})
+
+    pages = MOCK_DB["notion_pages"]
+    page = pages.get(title)
+
+    if op == "create_page":
+        if page:
+            return json.dumps({"status": "error", "message": f"Page '{title}' already exists."})
+        page = {
+            "title": title,
+            "blocks": [],
+            "updated_at": datetime.now().isoformat(),
+            "mock": True,
+        }
+        pages[title] = page
+    elif op == "read_page":
+        if not page:
+            return json.dumps({"status": "error", "message": f"Page '{title}' does not exist."})
+    elif op == "replace_page":
+        if not page:
+            page = {"title": title, "blocks": [], "mock": True}
+            pages[title] = page
+        page["blocks"] = [{"type": "paragraph", "content": content}]
+        page["updated_at"] = datetime.now().isoformat()
+    elif op == "append_text":
+        if not page:
+            page = {"title": title, "blocks": [], "mock": True}
+            pages[title] = page
+        page["blocks"].append(
+            {
+                "type": str(block_type or "paragraph").lower(),
+                "content": content,
+            }
+        )
+        page["updated_at"] = datetime.now().isoformat()
+    elif op == "add_todo":
+        if not page:
+            page = {"title": title, "blocks": [], "mock": True}
+            pages[title] = page
+        page["blocks"].append(
+            {
+                "type": "todo",
+                "content": content,
+                "done": bool(task_done),
+            }
+        )
+        page["updated_at"] = datetime.now().isoformat()
+    else:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "Invalid operation. Use create_page, read_page, replace_page, append_text, or add_todo.",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "success",
+            "message": f"Notion mock operation '{op}' completed.",
+            "page": pages[title],
+        }
+    )
+
+
+def list_notion_pages(limit=20):
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit = 20
+
+    pages = list(MOCK_DB["notion_pages"].values())
+    pages.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
+
+    return json.dumps(
+        {
+            "status": "success",
+            "count": min(len(pages), limit),
+            "pages": pages[:limit],
+        }
+    )
+
+
+available_functions = {
+    "draft_email": draft_email,
+    "list_email_drafts": list_email_drafts,
+    "create_calendar_appointment": create_calendar_appointment,
+    "list_calendar_appointments": list_calendar_appointments,
+    "book_trip": book_trip,
+    "list_trips": list_trips,
+    "launch_music_app": launch_music_app,
+    "notion_edit_page": notion_edit_page,
+    "list_notion_pages": list_notion_pages,
+}
+
 tools = [
     {
         "type": "function",
         "function": {
-            "name": "calculate_tdee_macros",
-            "description": "Calculates exact daily calorie and macronutrient targets for a lean bulk.",
+            "name": "draft_email",
+            "description": "Create a mock email draft.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "age": {"type": "integer"},
-                    "weight_kg": {"type": "number"},
-                    "height_cm": {"type": "number"}
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                    "cc": {"type": "string"},
+                    "bcc": {"type": "string"},
+                    "priority": {"type": "string", "description": "low, normal, high"},
+                    "send_time_iso": {
+                        "type": "string",
+                        "description": "Optional scheduled send time in ISO format.",
+                    },
                 },
-                "required": ["age", "weight_kg", "height_cm"]
-            }
-        }
+                "required": ["to", "subject", "body"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "lookup_food_macros",
-            "description": "Looks up exact macronutrients for a specific food item and weight.",
+            "name": "list_email_drafts",
+            "description": "List previously created mock email drafts.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "food_name": {"type": "string", "description": "Name of the food (e.g., chicken breast, white rice)"},
-                    "grams": {"type": "number", "description": "Weight of the food in grams"}
+                    "limit": {"type": "integer"},
+                    "recipient_filter": {"type": "string"},
                 },
-                "required": ["food_name", "grams"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "write_markdown_file",
-            "description": "Creates or overwrites a markdown (.md) file in the current project directory.",
+            "name": "create_calendar_appointment",
+            "description": "Create a mock calendar appointment.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {"type": "string", "description": "Relative file path. Example: notes/today-plan.md"},
-                    "content": {"type": "string", "description": "Markdown text to write to the file."}
+                    "title": {"type": "string"},
+                    "start_iso": {"type": "string"},
+                    "end_iso": {"type": "string"},
+                    "attendees": {
+                        "type": "string",
+                        "description": "Comma/semicolon separated attendee list.",
+                    },
+                    "location": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "reminder_minutes": {"type": "integer"},
                 },
-                "required": ["filename", "content"]
-            }
-        }
+                "required": ["title", "start_iso", "end_iso"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "create_outlook_draft",
-            "description": "Creates an email draft in the local Outlook desktop app. Never sends automatically.",
+            "name": "list_calendar_appointments",
+            "description": "List mock calendar appointments in a date window.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "to": {"type": "string", "description": "Recipient email(s). Separate multiple with semicolons."},
-                    "subject": {"type": "string", "description": "Email subject line."},
-                    "body": {"type": "string", "description": "Plain text email body."},
-                    "cc": {"type": "string", "description": "Optional CC recipients, semicolon-separated."},
-                    "bcc": {"type": "string", "description": "Optional BCC recipients, semicolon-separated."},
-                    "display": {"type": "boolean", "description": "If true, open draft window. If false, save draft silently."}
+                    "start_iso": {"type": "string"},
+                    "end_iso": {"type": "string"},
+                    "limit": {"type": "integer"},
                 },
-                "required": ["to", "subject", "body"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "create_outlook_calendar_event",
-            "description": "Creates an Outlook calendar event in the local Outlook desktop app.",
+            "name": "book_trip",
+            "description": "Book a mock trip with generated confirmation details.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "subject": {"type": "string", "description": "Calendar event title."},
-                    "start_iso": {"type": "string", "description": "Start datetime in ISO format, e.g. 2026-03-06T14:00:00"},
-                    "end_iso": {"type": "string", "description": "End datetime in ISO format, e.g. 2026-03-06T15:00:00"},
-                    "location": {"type": "string", "description": "Optional event location."},
-                    "body": {"type": "string", "description": "Optional event notes/body."},
-                    "busy_status": {"type": "string", "description": "free, tentative, busy, oof, working_elsewhere"},
-                    "reminder_minutes": {"type": "integer", "description": "Reminder minutes before start. Use -1 for no reminder."},
-                    "all_day": {"type": "boolean", "description": "Set true for an all-day event."},
-                    "display": {"type": "boolean", "description": "If true, open event window. If false, save event directly."}
+                    "traveler_name": {"type": "string"},
+                    "origin": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "depart_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "return_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "transport": {"type": "string", "description": "flight, train, car"},
+                    "hotel_required": {"type": "boolean"},
+                    "budget_usd": {"type": "number"},
                 },
-                "required": ["subject", "start_iso", "end_iso"]
-            }
-        }
+                "required": ["traveler_name", "origin", "destination", "depart_date"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "list_outlook_calendar_events",
-            "description": "Lists Outlook calendar events in a date range from the local Outlook desktop app.",
+            "name": "list_trips",
+            "description": "List mock booked trips.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start_iso": {"type": "string", "description": "Optional start datetime in ISO format."},
-                    "end_iso": {"type": "string", "description": "Optional end datetime in ISO format."},
-                    "max_items": {"type": "integer", "description": "Max events to return (1-100)."},
-                    "include_body": {"type": "boolean", "description": "Include event body text (truncated)."}
-                }
-            }
-        }
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "search_apple_music",
-            "description": "Searches Apple Music catalog and returns matching songs.",
+            "name": "launch_music_app",
+            "description": "Mock launch and control of a music app.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Song/artist/album search text."},
-                    "country_code": {"type": "string", "description": "2-letter storefront, e.g. us, cn, jp."},
-                    "limit": {"type": "integer", "description": "Max results to return (1-25)."},
-                    "open_search_page": {"type": "boolean", "description": "If true, also open Apple Music search page."}
+                    "app_name": {"type": "string", "description": "Spotify, Apple Music, etc."},
+                    "action": {"type": "string", "description": "open, close, search, play, pause, next"},
+                    "query": {"type": "string", "description": "Optional search text or track name."},
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["action"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "play_apple_music",
-            "description": "Finds the top Apple Music search result and attempts hands-free playback.",
+            "name": "notion_edit_page",
+            "description": "Mock Notion page editor.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Song/artist to play."},
-                    "country_code": {"type": "string", "description": "2-letter storefront, e.g. us, cn, jp."},
-                    "play_mode": {"type": "string", "description": "preview_auto (default, no-click preview) or full_track (opens track page)."}
+                    "page_title": {"type": "string"},
+                    "operation": {
+                        "type": "string",
+                        "description": "create_page, read_page, replace_page, append_text, add_todo",
+                    },
+                    "content": {"type": "string"},
+                    "block_type": {"type": "string", "description": "paragraph, heading, bullet"},
+                    "task_done": {"type": "boolean"},
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["page_title", "operation"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
-            "name": "open_apple_music_url",
-            "description": "Opens a specific Apple Music URL.",
+            "name": "list_notion_pages",
+            "description": "List mock Notion pages.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "A full Apple Music URL beginning with https://music.apple.com/"}
+                    "limit": {"type": "integer"},
                 },
-                "required": ["url"]
-            }
-        }
+            },
+        },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "control_media_playback",
-            "description": "Controls media playback using system media keys on Windows.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "One of: play, pause, play_pause, next, previous, stop."}
-                },
-                "required": ["action"]
-            }
-        }
-    }
 ]
 
-# --- 4. Agent Execution Loop ---
-def run_fitness_agent_turn(client, messages, user_prompt):
+
+def run_agent_turn(client, messages, user_prompt):
     messages.append({"role": "user", "content": user_prompt})
 
     while True:
@@ -690,13 +633,12 @@ def run_fitness_agent_turn(client, messages, user_prompt):
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            temperature=0.4
+            temperature=0.4,
         )
         response_message = response.choices[0].message
 
         if response_message.tool_calls:
             messages.append(response_message)
-
             for tool_call in response_message.tool_calls:
                 func_name = tool_call.function.name
                 func_args = json.loads(tool_call.function.arguments)
@@ -704,12 +646,14 @@ def run_fitness_agent_turn(client, messages, user_prompt):
                     print(f"--> [System]: Executing tool '{func_name}'")
 
                 result = available_functions[func_name](**func_args)
-                messages.append({
-                    "tool_call_id": tool_call.id,
-                    "role": "tool",
-                    "name": func_name,
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": func_name,
+                        "content": result,
+                    }
+                )
             continue
 
         messages.append(response_message)
@@ -720,18 +664,18 @@ def chat_loop():
     client = build_client()
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    print("BulkBot is ready. Type 'exit' or 'quit' to stop.")
+    print("DeskPilot is ready. Type 'exit' or 'quit' to stop.")
     while True:
         user_prompt = input("\nYou: ").strip()
         if not user_prompt:
             continue
         if user_prompt.lower() in {"exit", "quit"}:
-            print("BulkBot: See you next session.")
+            print("DeskPilot: Session closed.")
             break
 
-        answer = run_fitness_agent_turn(client, messages, user_prompt)
-        print(f"BulkBot: {answer}")
+        answer = run_agent_turn(client, messages, user_prompt)
+        print(f"DeskPilot: {answer}")
 
-# --- 5. Test It ---
+
 if __name__ == "__main__":
     chat_loop()

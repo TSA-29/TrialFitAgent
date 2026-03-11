@@ -1,84 +1,131 @@
 """
-BulkBot - Modern Chatbot UI
-A Chainlit-based web interface for the BulkBot fitness agent
+DeskPilot - Mock Personal Assistant UI
+A Chainlit-based web interface for the DeskPilot assistant.
 """
 
-import json
 import asyncio
+import json
+import os
 from typing import Optional
+
+# Authentication must have a JWT secret when login is enabled.
+os.environ.setdefault("CHAINLIT_AUTH_SECRET", "deskpilot-local-dev-secret-change-me")
+
 import chainlit as cl
+from chainlit.types import ThreadDict
 
 from agent import (
-    build_client,
-    SYSTEM_PROMPT,
+    DEBUG,
     MODEL,
-    tools,
+    SYSTEM_PROMPT,
     available_functions,
-    DEBUG
+    build_client,
+    tools,
 )
+from local_data_layer import LocalJSONDataLayer
 
 
-# Tool icons for visual feedback
+AUTH_USERNAME = os.environ.get("DESKPILOT_LOGIN_USERNAME", "deskpilot")
+AUTH_PASSWORD = os.environ.get("DESKPILOT_LOGIN_PASSWORD", "deskpilot")
+HISTORY_STORE_PATH = os.environ.get(
+    "DESKPILOT_HISTORY_FILE", ".files/deskpilot_history.json"
+)
+DATA_LAYER = LocalJSONDataLayer(store_path=HISTORY_STORE_PATH)
+
+
 TOOL_ICONS = {
-    "calculate_tdee_macros": "📊",
-    "lookup_food_macros": "🍗",
-    "write_markdown_file": "📝",
-    "create_outlook_draft": "📧",
-    "create_outlook_calendar_event": "📅",
-    "list_outlook_calendar_events": "📋",
-    "search_apple_music": "🔍",
-    "play_apple_music": "🎵",
-    "open_apple_music_url": "🔗",
-    "control_media_playback": "▶️"
+    "draft_email": "[EMAIL]",
+    "list_email_drafts": "[EMAIL-LIST]",
+    "create_calendar_appointment": "[CALENDAR]",
+    "list_calendar_appointments": "[CALENDAR-LIST]",
+    "book_trip": "[TRIP]",
+    "list_trips": "[TRIP-LIST]",
+    "launch_music_app": "[MUSIC]",
+    "notion_edit_page": "[NOTION]",
+    "list_notion_pages": "[NOTION-LIST]",
 }
 
 TOOL_NAMES = {
-    "calculate_tdee_macros": "Calculating TDEE & Macros",
-    "lookup_food_macros": "Looking up Food Macros",
-    "write_markdown_file": "Writing Markdown File",
-    "create_outlook_draft": "Creating Outlook Draft",
-    "create_outlook_calendar_event": "Creating Calendar Event",
-    "list_outlook_calendar_events": "Listing Calendar Events",
-    "search_apple_music": "Searching Apple Music",
-    "play_apple_music": "Playing Music",
-    "open_apple_music_url": "Opening Music URL",
-    "control_media_playback": "Controlling Playback"
+    "draft_email": "Drafting Email",
+    "list_email_drafts": "Listing Email Drafts",
+    "create_calendar_appointment": "Creating Calendar Appointment",
+    "list_calendar_appointments": "Listing Calendar Appointments",
+    "book_trip": "Booking Trip",
+    "list_trips": "Listing Trips",
+    "launch_music_app": "Music App Action",
+    "notion_edit_page": "Editing Notion Page",
+    "list_notion_pages": "Listing Notion Pages",
 }
+
+
+@cl.data_layer
+def get_data_layer():
+    return DATA_LAYER
+
+
+@cl.password_auth_callback
+def auth_callback(username: str, password: str):
+    if username == AUTH_USERNAME and password == AUTH_PASSWORD:
+        return cl.User(
+            identifier=username,
+            metadata={"provider": "password", "app": "deskpilot"},
+        )
+    return None
+
+
+def _rebuild_messages_from_thread(thread: ThreadDict) -> list:
+    restored = [{"role": "system", "content": SYSTEM_PROMPT}]
+    steps = sorted(
+        thread.get("steps", []),
+        key=lambda s: str(s.get("createdAt") or s.get("start") or ""),
+    )
+
+    for step in steps:
+        step_type = str(step.get("type") or "")
+        content = str(step.get("output") or step.get("input") or "").strip()
+        if not content:
+            continue
+
+        if step_type == "user_message":
+            restored.append({"role": "user", "content": content})
+        elif step_type == "assistant_message":
+            restored.append({"role": "assistant", "content": content})
+
+    return restored
 
 
 @cl.on_chat_start
 async def on_chat_start():
     """Initialize the chat session with a welcome message."""
-    # Initialize the message history with the system prompt
+    cl.user_session.set("client", build_client())
+    cl.user_session.set("messages", [{"role": "system", "content": SYSTEM_PROMPT}])
+
     msg = cl.Message(
-        content="""👋 Hey! I'm **BulkBot**, your AI fitness assistant. I'm ready to help you with macros, meal planning, Outlook, and music! 💪
-
-**✨ New Feature**: Tool Execution Visualization
-Watch exactly what I'm doing in real-time! When I use tools like calculating macros or searching music, you'll see:
-- 📥 Input parameters I'm using
-- ⏳ Execution progress
-- 📤 Detailed output and results
-
-**What I can help with:**
-- 📊 Calculate precise TDEE & macros for lean bulk
-- 🍗 Look up nutrition data for foods
-- 📧 Draft emails & create calendar events in Outlook
-- 🎵 Search & play music on Apple Music
-- 📝 Create and save markdown files
-
-Try asking: *"Calculate my macros"* or *"Search for workout music"*"""
+        content=(
+            "Hi, I am **DeskPilot**.\n\n"
+            "I can simulate real assistant workflows with mock data:\n"
+            "- Draft emails\n"
+            "- Schedule calendar appointments\n"
+            "- Book trips\n"
+            "- Launch/control a music app\n"
+            "- Edit Notion pages\n\n"
+            "History is enabled: use the left sidebar to reopen previous chats."
+        )
     )
     await msg.send()
 
-    # Store the client and message history in the session
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    """Restore runtime context when a user opens a historical thread."""
     cl.user_session.set("client", build_client())
-    cl.user_session.set("messages", [{"role": "system", "content": SYSTEM_PROMPT}])
+    cl.user_session.set("messages", _rebuild_messages_from_thread(thread))
 
 
 @cl.on_chat_end
 async def on_chat_end():
     """Clean up when chat session ends."""
-    messages = cl.user_session.get("messages")
+    messages = cl.user_session.get("messages") or []
     if DEBUG:
         print(f"--> [System]: Session ended. Total messages: {len(messages)}")
 
@@ -86,28 +133,26 @@ async def on_chat_end():
 @cl.on_message
 async def on_message(message: cl.Message):
     """Handle incoming user messages and generate responses."""
-    # Get the session state
     client = cl.user_session.get("client")
     messages_history = cl.user_session.get("messages")
 
-    # Add user message to history
+    if client is None:
+        client = build_client()
+        cl.user_session.set("client", client)
+
+    if messages_history is None:
+        messages_history = [{"role": "system", "content": SYSTEM_PROMPT}]
+        cl.user_session.set("messages", messages_history)
+
     user_prompt = message.content
     messages_history.append({"role": "user", "content": user_prompt})
 
-    # Create a response message with streaming
     response_msg = cl.Message(content="")
     await response_msg.send()
 
     try:
-        # Run the agent turn with tool support
-        final_answer = await run_agent_turn_with_tools(
-            client,
-            messages_history,
-            response_msg
-        )
-        # Update the final message
+        final_answer = await run_agent_turn_with_tools(client, messages_history, response_msg)
         await response_msg.update()
-        # Add assistant response to history
         messages_history.append({"role": "assistant", "content": final_answer})
     except Exception as exc:
         error_text = f"Sorry, I hit an internal error: {exc}"
@@ -119,113 +164,108 @@ async def on_message(message: cl.Message):
 
 
 async def run_agent_turn_with_tools(client, messages: list, response_msg: cl.Message) -> str:
-    """
-    Execute an agent turn with tool calling support and streaming updates.
-
-    This is an async version of the run_fitness_agent_turn function from agent.py,
-    adapted for Chainlit's async framework with enhanced tool visualization.
-    """
+    """Execute one assistant turn with tool-calling support and streaming updates."""
     tool_execution_count = 0
 
     while True:
-        # Call the LLM
         try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.4
-            )
+            async with cl.Step(name="Thinking", type="run") as think_step:
+                think_step.input = "Planning response and deciding tools..."
+                response = await asyncio.to_thread(
+                    client.chat.completions.create,
+                    model=MODEL,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.4,
+                )
+                think_step.output = "Model response received."
         except Exception as exc:
             await response_msg.stream_token(f"\nError while contacting the model: {exc}\n")
             return "I could not reach the model service."
+
         response_message = response.choices[0].message
 
-        # If there are tool calls, execute them
         if response_message.tool_calls:
-            # Add the assistant message with tool calls to history
-            messages.append({
-                "role": "assistant",
-                "content": response_message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": response_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": tc.type,
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
                         }
-                    }
-                    for tc in response_message.tool_calls
-                ]
-            })
+                        for tc in response_message.tool_calls
+                    ],
+                }
+            )
 
-            # Execute each tool call with detailed visualization
-            for idx, tool_call in enumerate(response_message.tool_calls, 1):
+            for tool_call in response_message.tool_calls:
                 tool_execution_count += 1
                 func_name = tool_call.function.name
-                func_args = json.loads(tool_call.function.arguments)
+                func_args = json.loads(tool_call.function.arguments or "{}")
 
-                # Get visual elements
-                icon = TOOL_ICONS.get(func_name, "🔧")
+                icon = TOOL_ICONS.get(func_name, "[TOOL]")
                 tool_name = TOOL_NAMES.get(func_name, func_name.replace("_", " ").title())
 
-                # Display tool execution header
-                await response_msg.stream_token(f"\n\n---\n")
-                await response_msg.stream_token(f"**Step {tool_execution_count}**: {icon} **{tool_name}**\n\n")
+                await response_msg.stream_token("\n\n---\n")
+                await response_msg.stream_token(
+                    f"**Step {tool_execution_count}**: {icon} **{tool_name}**\n\n"
+                )
 
-                # Display input parameters
-                if DEBUG or True:  # Always show parameters in web UI
-                    await response_msg.stream_token("📥 **Input Parameters**:\n")
-                    await display_tool_parameters(response_msg, func_name, func_args)
+                await response_msg.stream_token("Input Parameters:\n")
+                await display_tool_parameters(response_msg, func_name, func_args)
 
                 if DEBUG:
                     print(f"--> [System]: Executing tool '{func_name}' with args: {func_args}")
 
-                # Execute the tool
-                await response_msg.stream_token(f"⏳ **Executing**...\n")
+                await response_msg.stream_token("Executing...\n")
 
                 try:
-                    result = available_functions[func_name](**func_args)
-                    tool_result = json.loads(result) if isinstance(result, str) else result
-                    execution_status = "✅ Success"
-                except Exception as e:
-                    tool_result = {"status": "error", "message": str(e)}
+                    async with cl.Step(name=f"Tool: {tool_name}", type="tool") as tool_step:
+                        tool_step.input = json.dumps(func_args, ensure_ascii=False, indent=2)
+                        result = await asyncio.to_thread(
+                            available_functions[func_name], **func_args
+                        )
+                        tool_result = json.loads(result) if isinstance(result, str) else result
+                        tool_step.output = json.dumps(
+                            tool_result, ensure_ascii=False, indent=2
+                        )[:3000]
+                    execution_status = "Success"
+                except Exception as exc:
+                    tool_result = {"status": "error", "message": str(exc)}
                     result = json.dumps(tool_result)
-                    execution_status = "❌ Error"
+                    execution_status = "Error"
 
-                # Display execution status
                 await response_msg.stream_token(f"{execution_status}\n\n")
-
-                # Display detailed output
                 await display_tool_output(response_msg, func_name, tool_result)
 
-                # Show compact preview if available
                 if tool_result.get("status") == "success":
                     preview = get_tool_result_preview(func_name, tool_result)
                     if preview:
-                        await response_msg.stream_token(f"💡 **Summary**: {preview}\n\n")
+                        await response_msg.stream_token(f"Summary: {preview}\n\n")
 
-                # Add tool result to history
-                messages.append({
-                    "tool_call_id": tool_call.id,
-                    "role": "tool",
-                    "name": func_name,
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": func_name,
+                        "content": result,
+                    }
+                )
 
-            # Continue the loop to get the final response
             continue
 
-        # No more tool calls - we have the final answer
         final_content = response_message.content or ""
 
-        # If tools were executed, add a separator before final response
         if tool_execution_count > 0:
-            await response_msg.stream_token(f"\n\n---\n\n**📝 Final Response**:\n\n")
+            await response_msg.stream_token("\n\n---\n\nFinal Response:\n\n")
 
-        # Stream the final response
         if final_content:
             await response_msg.stream_token(final_content)
 
@@ -238,27 +278,15 @@ def get_tool_result_preview(func_name: str, result: dict) -> Optional[str]:
         return None
 
     previews = {
-        "calculate_tdee_macros": lambda r: (
-            f"Target: **{r['target_calories']}** kcal/day | "
-            f"P: {r['macros']['protein_g']}g | "
-            f"C: {r['macros']['carbs_g']}g | "
-            f"F: {r['macros']['fats_g']}g"
-        ),
-        "lookup_food_macros": lambda r: (
-            f"{r['amount_grams']}g {r['food']}: "
-            f"**{r['calories']}** kcal | "
-            f"P: {r['protein_g']}g | "
-            f"C: {r['carbs_g']}g | "
-            f"F: {r['fat_g']}g"
-        ),
-        "write_markdown_file": lambda r: f"File saved: `{r['path']}`",
-        "create_outlook_draft": lambda r: f"Draft created: {r['subject']}",
-        "create_outlook_calendar_event": lambda r: f"Event created: {r['subject']}",
-        "list_outlook_calendar_events": lambda r: f"Found {r['returned']} events",
-        "search_apple_music": lambda r: f"Found {r['count']} songs",
-        "play_apple_music": lambda r: f"Playing: {r['track']['track_name']} by {r['track']['artist_name']}",
-        "open_apple_music_url": lambda r: "Opening Apple Music URL",
-        "control_media_playback": lambda r: f"Media: {r['action']}"
+        "draft_email": lambda r: f"Drafted: {r['email']['subject']}",
+        "list_email_drafts": lambda r: f"{r.get('count', 0)} drafts returned",
+        "create_calendar_appointment": lambda r: f"Appointment: {r['appointment']['title']}",
+        "list_calendar_appointments": lambda r: f"{r.get('count', 0)} appointments returned",
+        "book_trip": lambda r: f"Trip booked: {r['trip']['origin']} -> {r['trip']['destination']}",
+        "list_trips": lambda r: f"{r.get('count', 0)} trips returned",
+        "launch_music_app": lambda r: r.get("message", "Music action completed"),
+        "notion_edit_page": lambda r: f"Notion page updated: {r['page']['title']}",
+        "list_notion_pages": lambda r: f"{r.get('count', 0)} pages returned",
     }
 
     preview_func = previews.get(func_name)
@@ -267,55 +295,62 @@ def get_tool_result_preview(func_name: str, result: dict) -> Optional[str]:
 
 async def display_tool_parameters(message: cl.Message, func_name: str, args: dict):
     """Display formatted tool input parameters."""
-    # Format parameters nicely based on the tool
     param_descriptions = {
-        "calculate_tdee_macros": {
-            "age": "Age (years)",
-            "weight_kg": "Weight (kg)",
-            "height_cm": "Height (cm)"
-        },
-        "lookup_food_macros": {
-            "food_name": "Food item",
-            "grams": "Amount (grams)"
-        },
-        "write_markdown_file": {
-            "filename": "File name",
-            "content": "Content (truncated)"
-        },
-        "create_outlook_draft": {
-            "to": "Recipient(s)",
+        "draft_email": {
+            "to": "To",
             "subject": "Subject",
-            "body": "Body (truncated)",
+            "body": "Body",
             "cc": "CC",
-            "bcc": "BCC"
+            "bcc": "BCC",
+            "priority": "Priority",
+            "send_time_iso": "Scheduled Time",
         },
-        "create_outlook_calendar_event": {
-            "subject": "Event title",
-            "start_iso": "Start time",
-            "end_iso": "End time",
+        "list_email_drafts": {
+            "limit": "Limit",
+            "recipient_filter": "Recipient Filter",
+        },
+        "create_calendar_appointment": {
+            "title": "Title",
+            "start_iso": "Start",
+            "end_iso": "End",
+            "attendees": "Attendees",
             "location": "Location",
-            "body": "Description"
+            "notes": "Notes",
+            "reminder_minutes": "Reminder (minutes)",
         },
-        "list_outlook_calendar_events": {
-            "start_iso": "Start date",
-            "end_iso": "End date",
-            "max_items": "Max events"
+        "list_calendar_appointments": {
+            "start_iso": "Start",
+            "end_iso": "End",
+            "limit": "Limit",
         },
-        "search_apple_music": {
-            "query": "Search query",
-            "country_code": "Country",
-            "limit": "Max results"
+        "book_trip": {
+            "traveler_name": "Traveler",
+            "origin": "Origin",
+            "destination": "Destination",
+            "depart_date": "Depart Date",
+            "return_date": "Return Date",
+            "transport": "Transport",
+            "hotel_required": "Hotel Required",
+            "budget_usd": "Budget USD",
         },
-        "play_apple_music": {
-            "query": "Search query",
-            "play_mode": "Play mode"
+        "list_trips": {
+            "limit": "Limit",
         },
-        "open_apple_music_url": {
-            "url": "Music URL"
+        "launch_music_app": {
+            "app_name": "App",
+            "action": "Action",
+            "query": "Query",
         },
-        "control_media_playback": {
-            "action": "Action"
-        }
+        "notion_edit_page": {
+            "page_title": "Page",
+            "operation": "Operation",
+            "content": "Content",
+            "block_type": "Block Type",
+            "task_done": "Task Done",
+        },
+        "list_notion_pages": {
+            "limit": "Limit",
+        },
     }
 
     descriptions = param_descriptions.get(func_name, {})
@@ -323,19 +358,17 @@ async def display_tool_parameters(message: cl.Message, func_name: str, args: dic
     for key, value in args.items():
         label = descriptions.get(key, key.replace("_", " ").title())
 
-        # Truncate long content for display
-        if key in ["content", "body"] and isinstance(value, str) and len(value) > 100:
+        if key in {"content", "body"} and isinstance(value, str) and len(value) > 100:
             value = value[:97] + "..."
 
-        # Format the value
         if isinstance(value, str):
             value_str = f'`"{value}"`'
         elif isinstance(value, bool):
-            value_str = "✓" if value else "✗"
+            value_str = "yes" if value else "no"
         else:
             value_str = f"`{value}`"
 
-        await message.stream_token(f"  • **{label}**: {value_str}\n")
+        await message.stream_token(f"  - **{label}**: {value_str}\n")
 
     await message.stream_token("\n")
 
@@ -345,95 +378,62 @@ async def display_tool_output(message: cl.Message, func_name: str, result: dict)
     await message.stream_token("Output:\n")
 
     if result.get("status") == "error":
-        error_msg = result.get("message", "Unknown error")
-        await message.stream_token(f"Error: {error_msg}\n")
+        await message.stream_token(f"Error: {result.get('message', 'Unknown error')}\n\n")
         return
 
-    if func_name == "calculate_tdee_macros":
+    if func_name == "draft_email":
+        email = result.get("email", {})
         await message.stream_token(
-            f"  - Daily Calories: {result.get('target_calories')} kcal\n"
-            f"  - Protein: {result.get('macros', {}).get('protein_g')}g\n"
-            f"  - Carbs: {result.get('macros', {}).get('carbs_g')}g\n"
-            f"  - Fats: {result.get('macros', {}).get('fats_g')}g\n"
+            f"  - Email ID: {email.get('email_id')}\n"
+            f"  - To: {email.get('to')}\n"
+            f"  - Subject: {email.get('subject')}\n"
+            f"  - Status: {email.get('status')}\n"
         )
-    elif func_name == "lookup_food_macros":
+    elif func_name == "list_email_drafts":
+        await message.stream_token(f"  - Drafts Returned: {result.get('count', 0)}\n")
+    elif func_name == "create_calendar_appointment":
+        appt = result.get("appointment", {})
         await message.stream_token(
-            f"  - Food: {result.get('food')}\n"
-            f"  - Amount: {result.get('amount_grams')}g\n"
-            f"  - Calories: {result.get('calories')} kcal\n"
-            f"  - Protein: {result.get('protein_g')}g\n"
-            f"  - Carbs: {result.get('carbs_g')}g\n"
-            f"  - Fats: {result.get('fat_g')}g\n"
+            f"  - Appointment ID: {appt.get('appointment_id')}\n"
+            f"  - Title: {appt.get('title')}\n"
+            f"  - Start: {appt.get('start')}\n"
+            f"  - End: {appt.get('end')}\n"
+            f"  - Status: {appt.get('status')}\n"
         )
-    elif func_name == "write_markdown_file":
+    elif func_name == "list_calendar_appointments":
+        await message.stream_token(f"  - Appointments Returned: {result.get('count', 0)}\n")
+    elif func_name == "book_trip":
+        trip = result.get("trip", {})
         await message.stream_token(
-            f"  - Status: {result.get('status')}\n"
-            f"  - Path: `{result.get('path')}`\n"
+            f"  - Trip ID: {trip.get('trip_id')}\n"
+            f"  - Route: {trip.get('origin')} -> {trip.get('destination')}\n"
+            f"  - Booking Ref: {trip.get('booking_reference')}\n"
+            f"  - Status: {trip.get('status')}\n"
+        )
+    elif func_name == "list_trips":
+        await message.stream_token(f"  - Trips Returned: {result.get('count', 0)}\n")
+    elif func_name == "launch_music_app":
+        await message.stream_token(
+            f"  - Action: {result.get('action')}\n"
             f"  - Message: {result.get('message')}\n"
         )
-    elif func_name == "create_outlook_draft":
+    elif func_name == "notion_edit_page":
+        page = result.get("page", {})
         await message.stream_token(
-            f"  - Action: {result.get('action')}\n"
-            f"  - To: {result.get('to')}\n"
-            f"  - Subject: {result.get('subject')}\n"
+            f"  - Page: {page.get('title')}\n"
+            f"  - Blocks: {len(page.get('blocks', []))}\n"
+            f"  - Updated: {page.get('updated_at')}\n"
         )
-    elif func_name == "create_outlook_calendar_event":
-        await message.stream_token(
-            f"  - Action: {result.get('action')}\n"
-            f"  - Subject: {result.get('subject')}\n"
-            f"  - Start: {result.get('start')}\n"
-            f"  - End: {result.get('end')}\n"
-        )
-    elif func_name == "list_outlook_calendar_events":
-        await message.stream_token(
-            f"  - Range: {result.get('range_start')} to {result.get('range_end')}\n"
-            f"  - Events Found: {result.get('total_in_range')} (showing {result.get('returned')})\n"
-        )
-        if result.get("events"):
-            await message.stream_token("\n  Events:\n")
-            for i, event in enumerate(result["events"][:5], 1):
-                await message.stream_token(
-                    f"  {i}. {event.get('subject', 'Untitled')} - {event.get('start', '')}\n"
-                )
-    elif func_name == "search_apple_music":
-        await message.stream_token(
-            f"  - Query: {result.get('query')}\n"
-            f"  - Results Found: {result.get('count')}\n"
-            f"  - Search URL: {result.get('search_url')}\n"
-        )
-        if result.get("results"):
-            await message.stream_token("\n  Top Results:\n")
-            for i, track in enumerate(result["results"][:3], 1):
-                await message.stream_token(
-                    f"  {i}. {track.get('track_name', '')} by {track.get('artist_name', '')}\n"
-                )
-    elif func_name == "play_apple_music":
-        track = result.get("track", {})
-        await message.stream_token(
-            f"  - Status: {result.get('play_mode')}\n"
-            f"  - Track: {track.get('track_name', 'N/A')}\n"
-            f"  - Artist: {track.get('artist_name', 'N/A')}\n"
-            f"  - Album: {track.get('album_name', 'N/A')}\n"
-            f"  - Opened: {'yes' if result.get('opened') else 'no'}\n"
-        )
-    elif func_name == "open_apple_music_url":
-        await message.stream_token(
-            f"  - URL: {result.get('url')}\n"
-            f"  - Opened: {'yes' if result.get('opened') else 'no'}\n"
-        )
-    elif func_name == "control_media_playback":
-        await message.stream_token(
-            f"  - Action: {result.get('action')}\n"
-            f"  - Status: {result.get('message')}\n"
-        )
+    elif func_name == "list_notion_pages":
+        await message.stream_token(f"  - Pages Returned: {result.get('count', 0)}\n")
     else:
         await message.stream_token(f"```json\n{json.dumps(result, indent=2)}\n```\n")
 
     await message.stream_token("\n")
-# Main entry point for development
-if __name__ == "__main__":
-    # This is for development only
-    # In production, use: chainlit run ui.py -w
-    print("Starting BulkBot UI...")
-    print("Run with: chainlit run ui.py -w")
 
+
+if __name__ == "__main__":
+    print("Starting DeskPilot UI...")
+    print("Login username:", AUTH_USERNAME)
+    print("Login password:", AUTH_PASSWORD)
+    print("Run with: chainlit run ui.py -w")

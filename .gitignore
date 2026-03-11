@@ -9,3 +9,9 @@
 # Python artifacts
 __pycache__/
 *.py[cod]
+
+# Runtime-generated app files
+.files/
+chainlit.out.log
+chainlit.err.log
+chainlit.md
